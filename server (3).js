@@ -1,0 +1,158 @@
+try { require("dotenv").config(); } catch {}
+const express = require("express");
+const cookieParser = require("cookie-parser");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const path = require("path");
+const { pool, init } = require("./db");
+
+const app = express();
+const SECRET = process.env.JWT_SECRET || "dev-secret-verander-dit";
+const COOKIE = "rj_token";
+const PROD = process.env.NODE_ENV === "production" || !!process.env.RENDER;
+
+app.use(express.json({ limit: "8mb" }));
+app.use(cookieParser());
+app.use(express.static(path.join(__dirname, "public")));
+app.get("/vendor/exceljs.min.js", (req, res) => res.sendFile(require.resolve("exceljs/dist/exceljs.min.js")));
+app.get("/vendor/xlsx.full.min.js", (req, res) => res.sendFile(require.resolve("xlsx/dist/xlsx.full.min.js")));
+
+// ---------- auth helpers ----------
+function auth(req, res, next) {
+  const t = req.cookies[COOKIE];
+  if (!t) return res.status(401).json({ error: "Niet ingelogd" });
+  try { req.user = jwt.verify(t, SECRET); next(); }
+  catch { res.status(401).json({ error: "Sessie verlopen" }); }
+}
+const ROLE_LEVEL = { viewer: 1, gebruiker: 2, beheerder: 3 };
+function logAudit(req, action, rtype, rid, summary) {
+  pool.query("INSERT INTO audit (username,action,rtype,rid,summary) VALUES ($1,$2,$3,$4,$5)",
+    [req.user ? req.user.username : "?", action, rtype, rid || "", (summary || "").slice(0, 300)]).catch(() => {});
+}
+const minRole = r => (req, res, next) =>
+  ROLE_LEVEL[req.user.role] >= ROLE_LEVEL[r] ? next() : res.status(403).json({ error: "Geen rechten hiervoor" });
+
+// ---------- auth routes ----------
+app.post("/api/login", async (req, res) => {
+  const { username, password } = req.body || {};
+  const { rows } = await pool.query("SELECT * FROM users WHERE username=$1", [String(username || "").trim().toLowerCase()]);
+  const u = rows[0];
+  if (!u || !(await bcrypt.compare(password || "", u.password_hash)))
+    return res.status(401).json({ error: "Gebruikersnaam of wachtwoord klopt niet" });
+  const token = jwt.sign({ id: u.id, username: u.username, role: u.role }, SECRET, { expiresIn: "12h" });
+  res.cookie(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: PROD, maxAge: 12 * 3600 * 1000 });
+  res.json({ username: u.username, role: u.role });
+});
+app.post("/api/logout", (req, res) => { res.clearCookie(COOKIE); res.json({ ok: true }); });
+app.get("/api/me", auth, (req, res) => res.json({ username: req.user.username, role: req.user.role }));
+app.post("/api/me/password", auth, async (req, res) => {
+  const { oldPassword, newPassword } = req.body || {};
+  const { rows } = await pool.query("SELECT * FROM users WHERE id=$1", [req.user.id]);
+  if (!(await bcrypt.compare(oldPassword || "", rows[0].password_hash))) return res.status(400).json({ error: "Huidig wachtwoord klopt niet" });
+  if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: "Nieuw wachtwoord: minimaal 6 tekens" });
+  await pool.query("UPDATE users SET password_hash=$1 WHERE id=$2", [await bcrypt.hash(newPassword, 10), req.user.id]);
+  res.json({ ok: true });
+});
+
+// ---------- user management (beheerder) ----------
+app.get("/api/users", auth, minRole("beheerder"), async (req, res) => {
+  const { rows } = await pool.query("SELECT id,username,role,created_at FROM users ORDER BY username");
+  res.json(rows);
+});
+app.post("/api/users", auth, minRole("beheerder"), async (req, res) => {
+  const { username, password, role } = req.body || {};
+  const u = String(username || "").trim().toLowerCase();
+  if (!u || !password || password.length < 6) return res.status(400).json({ error: "Gebruikersnaam en wachtwoord (min. 6 tekens) verplicht" });
+  if (!ROLE_LEVEL[role]) return res.status(400).json({ error: "Ongeldige rol" });
+  try {
+    await pool.query("INSERT INTO users (username,password_hash,role) VALUES ($1,$2,$3)", [u, await bcrypt.hash(password, 10), role]);
+    logAudit(req, "gebruiker aangemaakt", "user", "", u + " (" + role + ")");
+    res.json({ ok: true });
+  } catch { res.status(400).json({ error: "Gebruikersnaam bestaat al" }); }
+});
+app.put("/api/users/:id", auth, minRole("beheerder"), async (req, res) => {
+  const { role, password } = req.body || {};
+  if (role) {
+    if (!ROLE_LEVEL[role]) return res.status(400).json({ error: "Ongeldige rol" });
+    if (Number(req.params.id) === req.user.id && role !== "beheerder") return res.status(400).json({ error: "Je kunt je eigen beheerdersrol niet verwijderen" });
+    await pool.query("UPDATE users SET role=$1 WHERE id=$2", [role, req.params.id]);
+  }
+  if (password) {
+    if (password.length < 6) return res.status(400).json({ error: "Wachtwoord: minimaal 6 tekens" });
+    await pool.query("UPDATE users SET password_hash=$1 WHERE id=$2", [await bcrypt.hash(password, 10), req.params.id]);
+  }
+  res.json({ ok: true });
+});
+app.delete("/api/users/:id", auth, minRole("beheerder"), async (req, res) => {
+  if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: "Je kunt jezelf niet verwijderen" });
+  await pool.query("DELETE FROM users WHERE id=$1", [req.params.id]);
+  logAudit(req, "gebruiker verwijderd", "user", req.params.id, "");
+  res.json({ ok: true });
+});
+
+// ---------- records ----------
+const TYPES = { bon: "bonnen", rekening: "rekeningen", lening: "leningen", opdracht: "opdrachten", batch: "batches", sofactuur: "sofacturen" };
+app.get("/api/data", auth, async (req, res) => {
+  const { rows } = await pool.query("SELECT id,type,data FROM records ORDER BY updated_at");
+  const out = { bonnen: [], rekeningen: [], leningen: [], opdrachten: [], batches: [], sofacturen: [] };
+  rows.forEach(r => out[TYPES[r.type]].push({ ...r.data, id: r.id }));
+  const s = await pool.query("SELECT key,value FROM settings");
+  out.valuta = "SRD"; out.soCfg = null;
+  s.rows.forEach(r => { if (r.key === "valuta") out.valuta = r.value; if (r.key === "soCfg") { try { out.soCfg = JSON.parse(r.value); } catch {} } });
+  res.json(out);
+});
+app.put("/api/settings/:key", auth, minRole("gebruiker"), async (req, res) => {
+  if (!["valuta", "soCfg"].includes(req.params.key)) return res.status(400).json({ error: "Onbekende instelling" });
+  const val = req.params.key === "valuta" ? req.body.valuta : JSON.stringify(req.body.value);
+  await pool.query("INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2", [req.params.key, val]);
+  logAudit(req, "instelling gewijzigd", "settings", req.params.key, "");
+  res.json({ ok: true });
+});
+app.put("/api/records/:type/:id", auth, minRole("gebruiker"), async (req, res) => {
+  if (!TYPES[req.params.type]) return res.status(400).json({ error: "Onbekend type" });
+  const data = { ...req.body }; delete data.id;
+  await pool.query(
+    `INSERT INTO records (id,type,data,created_by) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (id) DO UPDATE SET data=$3, updated_at=now()`,
+    [req.params.id, req.params.type, data, req.user.username]);
+  const naam = data.leverancier || data.bedrijf || data.wie || data.nr || data.omschrijving || "";
+  logAudit(req, "opgeslagen", req.params.type, req.params.id, String(naam));
+  res.json({ ok: true });
+});
+app.delete("/api/records/:type/:id", auth, minRole("gebruiker"), async (req, res) => {
+  await pool.query("DELETE FROM records WHERE id=$1", [req.params.id]);
+  await pool.query("DELETE FROM images WHERE id=$1", [req.params.id]);
+  logAudit(req, "verwijderd", req.params.type, req.params.id, "");
+  res.json({ ok: true });
+});
+
+// ---------- images ----------
+app.get("/api/images/:id", auth, async (req, res) => {
+  const { rows } = await pool.query("SELECT data FROM images WHERE id=$1", [req.params.id]);
+  if (!rows[0]) return res.status(404).json({ error: "Niet gevonden" });
+  res.json({ data: rows[0].data });
+});
+app.put("/api/images/:id", auth, minRole("gebruiker"), async (req, res) => {
+  await pool.query("INSERT INTO images (id,data) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET data=$2", [req.params.id, req.body.data]);
+  res.json({ ok: true });
+});
+
+app.get("/api/audit", auth, minRole("beheerder"), async (req, res) => {
+  const { rows } = await pool.query("SELECT ts,username,action,rtype,rid,summary FROM audit ORDER BY id DESC LIMIT 300");
+  res.json(rows);
+});
+app.get("/api/backup", auth, minRole("beheerder"), async (req, res) => {
+  const records = await pool.query("SELECT id,type,data,created_by,updated_at FROM records");
+  const settings = await pool.query("SELECT key,value FROM settings");
+  const users = await pool.query("SELECT username,role,created_at FROM users");
+  const images = await pool.query("SELECT id,data FROM images");
+  logAudit(req, "back-up gedownload", "backup", "", "");
+  res.json({ gemaakt: new Date().toISOString(), records: records.rows, settings: settings.rows, users: users.rows, images: images.rows });
+});
+app.get("*", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
+app.use((err, req, res, next) => { console.error(err); res.status(500).json({ error: "Serverfout" }); });
+
+init().then(() => {
+  const port = process.env.PORT || 3000;
+  app.listen(port, () => console.log("Boekhouding draait op poort " + port));
+}).catch(e => { console.error("Database fout:", e.message); process.exit(1); });

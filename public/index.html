@@ -510,7 +510,7 @@ function renderOverzicht(){
     <div class="stat"><span class="ic">📅</span><div class="l">Deze maand te betalen</div><div class="v">${fmtSumsLines(sums(thisMonth,b=>[b.bedrag,b.cur]))}</div></div>
     <div class="stat green"><span class="ic">🛢</span><div class="l">Verwacht van Staatsolie</div><div class="v">${fmtSumsLines(verwachtSO)}</div><div class="s">ingeleverde templates, binnen 30 dgn</div></div>
     <div class="stat"><span class="ic">🤝</span><div class="l">Saldo leningen</div><div class="v">${fmtSumsLines(sums(D.leningen.filter(l=>!inTrash(l)),l=>[restBedrag(l),l.cur]))}</div><div class="s">leningen</div></div>`;
-  const soon=[...open].sort((a,b)=>(a.vervaldatum||a.datum).localeCompare(b.vervaldatum||b.datum)).slice(0,8);
+  const soon=[...open].sort((a,b)=>(a.vervaldatum||a.datum||"").localeCompare(b.vervaldatum||b.datum||"")).slice(0,8);
   document.getElementById("soon").innerHTML=soon.length?`<table><tr><th>Vervalt</th><th>Bedrijf / winkel</th><th>Omschrijving</th><th class="num">Bedrag</th><th></th></tr>`+
     soon.map(b=>`<tr><td>${fdate(b.vervaldatum||b.datum)}</td><td><strong>${esc(b.leverancier)}</strong></td><td>${esc(b.omschrijving)}</td><td class="num">${fmt(b.bedrag,b.cur)}</td><td>${btag(b)}</td></tr>`).join("")+"</table>"
     :`<div class="empty">Niets open – alles is betaald. 🎉</div>`;
@@ -546,9 +546,9 @@ function renderBonnen(){
   let rows="";
   if(s==="lev"){
     const g={};list.forEach(b=>(g[b.leverancier]=g[b.leverancier]||[]).push(b));
-    Object.keys(g).sort((a,b)=>a.localeCompare(b)).forEach(n=>{const its=g[n].sort((a,b)=>a.datum.localeCompare(b.datum));
+    Object.keys(g).sort((a,b)=>a.localeCompare(b)).forEach(n=>{const its=g[n].sort((a,b)=>(a.datum||"").localeCompare(b.datum||""));
       rows+=`<tr class="group"><td colspan="4">${esc(n)} <span style="color:var(--muted);font-weight:500">(${its.length})</span></td><td class="num">${fmtSums(sums(its,b=>[b.bedrag,b.cur]))}</td><td colspan="2"></td></tr>`+its.map(row).join("");});
-  } else rows=list.sort((a,b)=>b.datum.localeCompare(a.datum)).map(row).join("");
+  } else rows=list.sort((a,b)=>(b.datum||"").localeCompare(a.datum||"")).map(row).join("");
   el.innerHTML=`<table><tr><th>Foto</th><th>Datum</th><th>Winkel / leverancier</th><th>Gekocht</th><th class="num">Bedrag</th><th>Status</th><th class="edit"></th></tr>${rows}
     <tr class="total"><td colspan="4">Totaal</td><td class="num">${fmtSums(sums(list,b=>[b.bedrag,b.cur]))}</td><td colspan="2"></td></tr></table>`;
   el.querySelectorAll("img.thumb").forEach(async im=>{try{const r=await api("GET","/api/images/"+im.dataset.id);im.src=r.data;}catch(e){}});
@@ -576,7 +576,7 @@ function renderLeningen(){
   const el=document.getElementById("lenLijst");
   if(!D.leningen.length)return el.innerHTML=`<div class="card empty">Nog geen leningen. Bijv. een truck die je in termijnen afbetaalt.</div>`;
   el.innerHTML=D.leningen.map(l=>{const betaald=l.totaal-restBedrag(l),rest=restBedrag(l),pct=Math.min(100,betaald/l.totaal*100);
-    const afl=[...l.aflossingen].map((a,i)=>({...a,i})).sort((a,b)=>a.datum.localeCompare(b.datum));let lopend=l.totaal;
+    const afl=[...(l.aflossingen||[])].map((a,i)=>({...a,i})).sort((a,b)=>(a.datum||"").localeCompare(b.datum||""));let lopend=l.totaal;
     return `<div class="card">
       <div class="row"><div style="flex:1"><div style="font-weight:700;font-size:18px">${esc(l.wie)}</div><div style="color:var(--muted)">${esc(l.omschrijving)} · gestart ${fdate(l.startdatum)}${l.perMaand?` · afspraak ${fmt(l.perMaand,l.cur)}/maand`:""}</div></div>
         <button class="btn light sm noprint" onclick="printLening('${l.id}')">🖨 Overzicht / PDF</button><button class="btn light sm icon noprint edit" onclick="delLening('${l.id}')">✕</button></div>
@@ -592,7 +592,7 @@ function renderLeningen(){
 }
 function printLening(id){
   const l=D.leningen.find(x=>x.id===id);const betaald=l.totaal-restBedrag(l),rest=restBedrag(l);
-  const afl=[...l.aflossingen].sort((a,b)=>a.datum.localeCompare(b.datum));let lopend=l.totaal;
+  const afl=[...(l.aflossingen||[])].sort((a,b)=>(a.datum||"").localeCompare(b.datum||""));let lopend=l.totaal;
   const logo=document.querySelector(".print-head img").src;
   const html=`<!DOCTYPE html><html lang="nl"><head><meta charset="UTF-8"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/inter-ui/4.0.2/inter.min.css">
 <title>Leningoverzicht – ${esc(l.wie)}</title>
@@ -620,10 +620,11 @@ function printLening(id){
 // ---------- MAANDOVERZICHT ----------
 function maandData(m,ALL){
   const groups={};
-  D.rekeningen.filter(r=>ALL||monthOf(r.vervaldatum)===m).forEach(r=>(groups[r.bedrijf]=groups[r.bedrijf]||[]).push({wat:r.omschrijving||(r.items.map(i=>i.naam).join(", ")),datum:r.vervaldatum,bedrag:r.bedrag,cur:r.cur,st:r.betaald?"Betaald":"Open",r}));
+  (D.rekeningen||[]).filter(r=>ALL||monthOf(r.vervaldatum)===m).forEach(r=>(groups[r.bedrijf||"Onbekend"]=groups[r.bedrijf||"Onbekend"]||[]).push({wat:r.omschrijving||(r.items||[]).map(i=>i.naam).join(", "),datum:r.vervaldatum||"",bedrag:r.bedrag,cur:r.cur,st:r.betaald?"Betaald":"Open",r}));
+  D.bonnen.filter(b=>!inTrash(b)&&b.vervaldatum&&(ALL||monthOf(b.vervaldatum)===m)).forEach(b=>{const k=(b.leverancier||"Onbekend");(groups[k]=groups[k]||[]).push({wat:b.omschrijving,datum:b.vervaldatum,bedrag:b.bedrag,cur:b.cur,st:b.status==="paid"?"Betaald":"Open",r:{betaald:b.status==="paid",vervaldatum:b.vervaldatum}});});
   D.leningen.forEach(l=>{const rest=restBedrag(l);if(!ALL&&l.perMaand>0&&rest>0&&monthOf(l.startdatum)<=m)
     (groups[l.wie]=groups[l.wie]||[]).push({wat:"Aflossing lening: "+l.omschrijving,datum:m+"-01",bedrag:Math.min(l.perMaand,rest),cur:l.cur,st:"Lening"});});
-  const bg={};D.bonnen.filter(b=>!inTrash(b)).filter(b=>ALL||monthOf(b.datum)===m).forEach(b=>(bg[b.leverancier]=bg[b.leverancier]||[]).push(b));
+  const bg={};D.bonnen.filter(b=>!inTrash(b)).filter(b=>ALL||monthOf(b.datum)===m).forEach(b=>{const k=(b.leverancier==null?"":String(b.leverancier)).trim()||"Onbekend";(bg[k]=bg[k]||[]).push(b);});
   return {groups,bg};
 }
 function renderMaand(){
@@ -710,12 +711,12 @@ async function exportExcel(ALL,MM){
   ws3.columns=[{width:26},{width:34},{width:14},{width:18},{width:18},{width:18},{width:16}];
   header(ws3,"Overzicht leningen",7);
   r=6;thead(ws3,r++,["Aan wie","Waarvoor","Valuta","Totaal","Betaald","Saldo","% afbetaald"]);
-  D.leningen.forEach(l=>{const b=l.totaal-restBedrag(l);dataRow(ws3,r,[l.wie,l.omschrijving,l.cur,l.totaal,b,restBedrag(l),l.totaal?b/l.totaal:0],l.cur,4);ws3.getCell(r,5).numFmt=money(l.cur);ws3.getCell(r,6).numFmt=money(l.cur);ws3.getCell(r,7).numFmt="0%";r++;});
+  D.leningen.filter(l=>!inTrash(l)).forEach(l=>{const b=l.totaal-restBedrag(l);dataRow(ws3,r,[l.wie,l.omschrijving,l.cur,l.totaal,b,restBedrag(l),l.totaal?b/l.totaal:0],l.cur,4);ws3.getCell(r,5).numFmt=money(l.cur);ws3.getCell(r,6).numFmt=money(l.cur);ws3.getCell(r,7).numFmt="0%";r++;});
   r++;totalRow(ws3,r++,"Totaal nog af te lossen",7,sums(D.leningen,l=>[restBedrag(l),l.cur]));
   // detail per lening
-  D.leningen.forEach(l=>{r+=2;ws3.mergeCells(r,1,r,7);ws3.getCell(r,1).value=`${l.wie} – ${l.omschrijving}`;ws3.getCell(r,1).font={bold:true,size:13};r++;
+  D.leningen.filter(l=>!inTrash(l)).forEach(l=>{r+=2;ws3.mergeCells(r,1,r,7);ws3.getCell(r,1).value=`${l.wie} – ${l.omschrijving}`;ws3.getCell(r,1).font={bold:true,size:13};r++;
     thead(ws3,r++,["Datum","Notitie","Valuta","Betaald","Saldo daarna","",""]);let lop=l.totaal;
-    [...l.aflossingen].sort((a,b)=>a.datum.localeCompare(b.datum)).forEach(a=>{lop-=a.bedrag;dataRow(ws3,r,[safeDate(a.datum),a.notitie||"",l.cur,a.bedrag,lop],l.cur,4);ws3.getCell(r,5).numFmt=money(l.cur);r++;});});
+    [...(l.aflossingen||[])].sort((a,b)=>(a.datum||"").localeCompare(b.datum||"")).forEach(a=>{lop-=a.bedrag;dataRow(ws3,r,[safeDate(a.datum),a.notitie||"",l.cur,a.bedrag,lop],l.cur,4);ws3.getCell(r,5).numFmt=money(l.cur);r++;});});
 
   // --- Sheet 4: Samenvatting
   const ws4=wb.addWorksheet("Samenvatting",{views:[{showGridLines:false}]});
@@ -727,9 +728,9 @@ async function exportExcel(ALL,MM){
   line("Saldo leningen",sums(D.leningen,l=>[restBedrag(l),l.cur]));
   // --- Per bedrijf: één tabblad per bedrijf/winkel (bonnen + rekeningen samen)
   const perBedrijf={};
-  const addLine=(naam,datum,cur,bedrag,wat,st)=>{const k=naam.trim();(perBedrijf[k]=perBedrijf[k]||[]).push({datum,cur,bedrag,wat,st});};
-  D.bonnen.filter(b=>ALL||monthOf(b.datum)===m).forEach(b=>addLine(b.leverancier,b.datum,b.cur,b.bedrag,b.omschrijving,b.status==="paid"?"Betaald":"Open"));
-  D.rekeningen.filter(r=>ALL||monthOf(r.vervaldatum)===m).forEach(r=>addLine(r.bedrijf,r.vervaldatum,r.cur,r.bedrag,r.omschrijving||r.items.map(i=>i.naam).join(", "),r.betaald?"Betaald":"Open"));
+  const addLine=(naam,datum,cur,bedrag,wat,st)=>{const k=((naam==null?"":String(naam)).trim())||"Onbekend";(perBedrijf[k]=perBedrijf[k]||[]).push({datum:datum||"",cur:cur||D.valuta,bedrag:Number(bedrag)||0,wat,st});};
+  D.bonnen.filter(b=>!inTrash(b)&&(ALL||monthOf(b.datum)===m)).forEach(b=>addLine(b.leverancier,b.datum,b.cur,b.bedrag,b.omschrijving,b.status==="paid"?"Betaald":"Open"));
+  (D.rekeningen||[]).filter(r=>ALL||monthOf(r.vervaldatum)===m).forEach(r=>addLine(r.bedrijf,r.vervaldatum,r.cur,r.bedrag,r.omschrijving||(r.items||[]).map(i=>i.naam).join(", "),r.betaald?"Betaald":"Open"));
   const used=new Set(wb.worksheets.map(w=>w.name.toLowerCase()));
   Object.keys(perBedrijf).sort((a,b)=>a.localeCompare(b)).forEach(naam=>{
     let sn=naam.replace(/[\\/*?:\[\]]/g," ").replace(/[\x00-\x1F]/g,"").trim().slice(0,28).trim().replace(/^'+|'+$/g,"").trim()||"Bedrijf";
@@ -737,7 +738,7 @@ async function exportExcel(ALL,MM){
     let base=sn,i=2;while(used.has(sn.toLowerCase())){sn=(base.slice(0,25)+" "+i++).trim();}used.add(sn.toLowerCase());
     const ws=wb.addWorksheet(sn,{views:[{showGridLines:false}]});
     ws.columns=[{width:14},{width:8},{width:16},{width:36},{width:12}];
-    const rows=perBedrijf[naam].sort((a,b)=>a.datum.localeCompare(b.datum));
+    const rows=perBedrijf[naam].sort((a,b)=>(a.datum||"").localeCompare(b.datum||""));
     // header: company name in yellow, bold, centered
     ws.mergeCells(1,1,1,5);const hc=ws.getCell(1,1);hc.value=naam.toUpperCase();hc.font={bold:true,size:13};hc.alignment={horizontal:"center",vertical:"middle"};
     hc.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFFFFF00"}};ws.getRow(1).height=24;

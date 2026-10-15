@@ -663,9 +663,9 @@ async function ensureExcel(){
   return true;
 }
 // ---------- EXCEL EXPORT ----------
-async function exportExcel(ALL){
+async function exportExcel(ALL,MM){
   if(!await ensureExcel())return;
-  const m=m_maand.value||todayISO().slice(0,7);const label=ALL?"alle maanden":mlabel(m);const {groups,bg}=maandData(m,ALL);
+  const m=MM||m_maand.value||todayISO().slice(0,7);const label=ALL?"alle maanden":mlabel(m);const {groups,bg}=maandData(m,ALL);
   const wb=new ExcelJS.Workbook();wb.creator=BEDRIJF;
   const Y="FFFBC80D",G="FF494949",L="FFF3F3F1",W="FFFFFFFF",YS="FFFFFBEA";
   const thin={style:"thin",color:{argb:"FFE3E3E0"}};const border={top:thin,bottom:thin,left:thin,right:thin};
@@ -784,13 +784,21 @@ document.addEventListener("click",e=>{document.querySelectorAll("details.menu[op
 function fabToggle(){document.getElementById("fab").classList.toggle("open");}
 function fabGo(tab,form){document.getElementById("fab").classList.remove("open");gotoTab(tab);setTimeout(()=>{const f=document.getElementById(form);if(f&&!f.classList.contains("open"))toggleForm(form,null);},150);}
 function rapportMenu(){
+  const cur=m_maand.value||todayISO().slice(0,7);
+  const jaren=[...new Set([todayISO().slice(0,4),...D.bonnen.map(b=>(b.datum||"").slice(0,4)),...D.sofacturen.map(f=>(f.datum||"").slice(0,4)),...D.opdrachten.map(o=>((o.rfq||{}).datum||"").slice(0,4))])].filter(j=>/^\d{4}$/.test(j)).sort().reverse();
   soModalBody.innerHTML=`<h3 style="margin:0 0 4px;text-transform:none;font-size:17px;color:var(--ink)">📊 Rapport downloaden</h3>
-    <div style="color:var(--muted);font-size:13px;margin-bottom:16px">Kies welke periode je wilt exporteren naar Excel.</div>
-    <div style="display:grid;gap:10px">
-      <button class="btn primary" onclick="soClose();runExport(exportExcel)">Deze maand (${mlabel(m_maand.value||todayISO().slice(0,7))})</button>
-      <button class="btn light" onclick="soClose();runExport(exportExcel,true)">Alles (alle maanden)</button>
-      <button class="btn light" onclick="soClose();runExport(exportJaar)">Jaarrapport ${(m_maand.value||todayISO()).slice(0,4)}</button>
-      <button class="btn light" onclick="soClose();runExport(exportStaatsolie)">Staatsolie-rapport</button>
+    <div style="color:var(--muted);font-size:13px;margin-bottom:16px">Kies zelf de periode en download als Excel.</div>
+    <div style="display:grid;gap:16px">
+      <div><label>📅 Maandrapport – kies de maand</label>
+        <div class="row" style="margin-top:6px"><input type="month" id="rap_maand" value="${cur}" style="flex:1">
+        <button class="btn primary" onclick="const v=rap_maand.value||'${cur}';soClose();runExport(exportExcel,false,v)">Download</button></div></div>
+      <div><label>🗓 Jaarrapport – kies het jaar</label>
+        <div class="row" style="margin-top:6px"><select id="rap_jaar" style="flex:1">${jaren.map(j=>`<option>${j}</option>`).join("")}</select>
+        <button class="btn primary" onclick="const v=rap_jaar.value;soClose();runExport(exportJaar,v)">Download</button></div></div>
+      <div style="border-top:1px solid var(--line);padding-top:14px;display:grid;gap:10px">
+        <button class="btn light" onclick="soClose();runExport(exportExcel,true)">📦 Alles – elke maand en elk bedrijf in één Excel</button>
+        <button class="btn light" onclick="soClose();runExport(exportStaatsolie)">🛢 Staatsolie-rapport (offertes, PO's, SES)</button>
+      </div>
     </div>
     <div class="row" style="margin-top:14px"><button class="btn light" onclick="soClose()">Annuleren</button></div>`;
   soModalWrap.style.display="flex";
@@ -1371,9 +1379,9 @@ function renderResultaat(){
 }
 
 // --- jaarrapport ---
-async function exportJaar(){
+async function exportJaar(JJ){
   if(!await ensureExcel())return;
-  const jaar=(m_maand.value||todayISO()).slice(0,4);
+  const jaar=JJ||(m_maand.value||todayISO()).slice(0,4);
   const wb=new ExcelJS.Workbook();const G="FF494949",W="FFFFFFFF",Y="FFFBC80D";
   const thin={style:"thin",color:{argb:"FFE3E3E0"}};const border={top:thin,bottom:thin,left:thin,right:thin};
   const mkHead=(ws,titel,cols)=>{ws.mergeCells(1,1,1,cols);const t=ws.getCell(1,1);t.value=`${BEDRIJF} – ${titel} – ${jaar}`;t.font={bold:true,size:14};ws.getRow(1).height=24;
